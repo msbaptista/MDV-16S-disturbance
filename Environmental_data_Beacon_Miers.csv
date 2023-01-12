@@ -1,0 +1,10 @@
+Variable,Unit,Beacon,Miers,Reference
+pH,,7.10,8.62,Lee et al 2012
+Conductivity,mS,3920,300,Lee et al 2012
+Gwc,%,2.36,0.53,Lee et al 2012
+C,%,0.14,0.46,Lee et al 2012
+N,%,0.08,0.05,Lee et al 2012
+C/N,,1.80,18.2,Lee et al 2012
+Cu,ppm,73.7,11.9,Lee et al 2012
+NH@4~,nmol/g,23.5,22.9,Monteiro et al 2020
+NO@2~ + NO@3~,nmol/g,28.9,4.11,Monteiro et al 2020
