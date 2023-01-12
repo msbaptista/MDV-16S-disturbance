@@ -1,0 +1,957 @@
+---
+title: "DryValleys_Data_Analysis"
+author: "Mafalda S. Baptista"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.width = 10, fig.height = 6)
+```
+
+
+```{r Libraries}
+
+# Libraries                   
+library("tidyverse")          # data wrangling and visualisation
+library("knitr")              # markdown output control
+
+library("phyloseq")           # analysis of microbial communities
+library("microbiome")         # analysis of microbial communities
+library("microViz")           # visualisation of microbial communities
+
+library("philr")              # phylogenetic isometric log-ratio transform
+library("vegan")              # multivariable analyses
+
+library("gt")                 # tables
+
+library("ggdendro")           # plot dendrogram
+library("patchwork")          # plots together
+library("cowplot")            # plots together + theme 
+
+library("here")               # set the path to the folder 
+
+set.seed(57)
+```
+
+
+```{r Load the data}
+
+# Load the data
+
+dv <- readRDS("dryvalleys_manipulation.rds")
+dv # 2925
+```
+This is a phyloseq object with ASVs counts, taxonomy (SILVA v128), tree and associated metadata. It was generated following the code in dada2_DryValleys_pub.R 
+
+### Inspect reads and ASVs
+
+```{r ASVs and reads statistics}
+
+# Inspect number of reads by ASVs
+
+colSums.asv.df <- data.frame(colSums(otu_table(dv))) %>%
+  rownames_to_column("ASV")
+
+colSums.asv.df %>% summarise(
+    max = max(colSums.otu_table.dv..),
+    median = median(colSums.otu_table.dv..),
+    min = min(colSums.otu_table.dv..) 
+    ) %>% 
+      kable()
+
+ggplot(colSums.asv.df, aes(x = reorder(ASV, -colSums.otu_table.dv..), y = colSums.otu_table.dv..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+
+# Inspect number of reads by sample
+
+rowSums.asv.df <- merge(data.frame(rowSums(otu_table(dv))), data.frame(sample_data(dv)), by = "row.names", all.x=TRUE) 
+
+rowSums.asv.df %>% summarise(
+    max = max(rowSums.otu_table.dv..),
+    median = median(rowSums.otu_table.dv..),
+    min = min(rowSums.otu_table.dv..) 
+    ) %>% 
+      kable()
+
+plot_valley <- ggplot(rowSums.asv.df, aes(x = reorder(Samples, -rowSums.otu_table.dv..), y =
+               rowSums.otu_table.dv..)) +
+  geom_col(aes (fill= Valley)) + 
+  scale_fill_manual(values = c("#4DBBD5FF","#E64B35FF")) +
+  coord_flip() +
+  ylab("Reads") +
+  xlab(" Samples") +
+  theme_cowplot() +
+  theme(plot.tag = element_text(size = 20)) +
+  labs(tag = "a")
+
+plot_type <- ggplot(rowSums.asv.df, aes(x = reorder(Samples, -rowSums.otu_table.dv..), y =
+               rowSums.otu_table.dv..)) +
+  geom_col(aes (fill= Type)) + 
+  scale_fill_manual(values = c("#4DBBD5FF","#E64B35FF")) +
+  coord_flip() +
+  ylab("Reads") +
+  xlab("Samples") +
+  theme_cowplot() +
+  theme(plot.tag = element_text(size = 20)) +
+  labs(tag = "b")
+
+    
+plot_valley | plot_type
+#ggsave("Fig_number_reads.png", dpi = 300, width = 12, height = 10)
+
+```
+
+#### Filtering
+
+```{r Filter erroneous taxonomy}
+
+# Remove known erroneous assignments
+dvf <- subset_taxa(dv, (Kingdom !="Eukaryota")) 
+dvf <- subset_taxa(dvf, (Class !="Chloroplast") | is.na(Class))
+dvf <- subset_taxa(dvf, (Family != "Mitochondria") | is.na(Family))
+dvf # 2801
+```
+
+
+```{r Filter T0 cDNA}
+
+# Remove T0 cDNA samples - soil was not stored in RNA later or similar so we won't consider these results because they may be misleading
+dvf_f <- subset_samples(dvf, Samples != "00B_C" & Samples != "00M_C") %>% 
+  prune_taxa(taxa_sums(.) > 0, .) 
+dvf_f # 2762
+```
+
+
+```{r Filter low abundance}
+# Compare full and filtered data sets with a PCoA using the euclidean distance of a philr transformed data set
+
+# Full data set
+
+# Add a pseudo count and transform data with philr
+dvf_f_t <- transform_sample_counts(dvf_f, function(x) x+1)
+
+dvf_f_t_philr <- philr(otu_table(dvf_f_t),
+                       phy_tree(dvf_f_t),
+                       part.weights='enorm.x.gm.counts',
+                       ilr.weights='blw.sqrt')
+
+
+# Calculate the distance with method "euclidean"
+dvf_f_t_dist <- vegan::vegdist(dvf_f_t_philr, method = "euclidean")
+
+# PCoA ordination
+dvf_f_t_pcoa <- phyloseq::ordinate(dvf_f, "PCoA", distance = dvf_f_t_dist)
+
+# Plot
+plot.dvf_f_t<- plot_ordination(dvf_f_t, dvf_f_t_pcoa, color = "Type", shape = "Valley") +
+  scale_color_manual(values = c("#4DBBD5FF","#E64B35FF")) +
+  geom_point(size = 3) + 
+  stat_ellipse(aes(colour = Type, group = Type)) +
+  theme_cowplot() +
+  theme(plot.tag = element_text(size = 20)) +
+  labs(tag = "a")
+
+
+# Filtered data set
+
+# Remove ASVs that do not appear more than 2 times in at least 2 samples 
+
+nsamples(dvf_f) # 2 samples ~ 3 % of all samples
+
+dvf_filter <- genefilter_sample(dvf_f, filterfun_sample(function(x) x > 2), A = 0.03*nsamples(dvf_f))
+dvf2 <- prune_taxa(dvf_filter, dvf_f)
+dvf2 # 1269 (retains 45 % of taxa)
+
+
+ 
+# Add a pseudo count and transform data with philr
+dvf2_t <- transform_sample_counts(dvf2, function(x) x+1)
+
+dvf2_t_philr <- philr(otu_table(dvf2_t),
+                       phy_tree(dvf2_t),
+                       part.weights='enorm.x.gm.counts',
+                       ilr.weights='blw.sqrt')
+
+
+# Calculate the distance with method "euclidean"
+dvf2_t_dist <- vegdist(dvf2_t_philr, method = "euclidean")
+
+# PCoA ordination
+dvf2_t_pcoa <- ordinate(dvf2, "PCoA", distance = dvf2_t_dist)
+
+# Plot
+plot.dvf2_t<- plot_ordination(dvf2_t, dvf2_t_pcoa, color = "Type", shape = "Valley") +
+  scale_color_manual(values = c("#4DBBD5FF","#E64B35FF")) +
+  geom_point(size = 3) + 
+  stat_ellipse(aes(colour = Type, group = Type)) +
+  theme_cowplot() +
+  theme(plot.tag = element_text(size = 20)) +
+  labs(tag = "b")
+
+plot.dvf_f_t + plot.dvf2_t
+#ggsave("Fig_filtering_full.png", dpi = 300, width = 10, height = 4)
+```
+
+
+```{r PERMANOVA}
+
+# PERMANOVA on the full data set
+adonis2(dvf_f_t_dist ~  Valley, data.frame(sample_data(dvf_f)), perm = 999, by = NULL)
+adonis2(dvf_f_t_dist ~  Type, data.frame(sample_data(dvf_f)), perm = 999, by = NULL) 
+
+dispersion.valley <- betadisper(dvf_f_t_dist, sample_data(dvf_f)$Valley) 
+permutest(dispersion.valley)
+
+dispersion.type <- betadisper(dvf_f_t_dist, sample_data(dvf_f)$Type) 
+permutest(dispersion.type)
+
+# PERMANOVA on the filtered data set
+adonis2(dvf2_t_dist ~  Valley, data.frame(sample_data(dvf2)), perm = 999, by = NULL)
+adonis2(dvf2_t_dist ~  Type, data.frame(sample_data(dvf2)), perm = 999, by = NULL)
+
+dispersion.valley2 <- betadisper(dvf2_t_dist, sample_data(dvf2)$Valley) 
+permutest(dispersion.valley2)
+
+dispersion.type2 <- betadisper(dvf2_t_dist, sample_data(dvf2)$Type) 
+permutest(dispersion.type2)
+```
+Much more significant for Valley than Type, but still it is significant for both
+
+```{r How many reads}
+
+rowSums.asv.df <- merge(data.frame(rowSums(otu_table(dvf2))), data.frame(sample_data(dvf2)), by = "row.names", all.x=TRUE) 
+
+d_reads_beacon <- rowSums.asv.df %>%
+  filter(Type == "DNA") %>%
+  filter(Valley == "Beacon") %>%
+  ggplot(aes(x = Time, y = rowSums.otu_table.dvf2..)) +
+  geom_col(fill = "#4DBBD5FF") +
+  facet_grid(~Treatment, scales = "free") +
+  ylab("Reads") +
+  xlab("") +
+  theme_cowplot() +
+  ggtitle("DNA reads Beacon")
+
+d_reads_miers <- rowSums.asv.df %>%
+  filter(Type == "DNA") %>%
+  filter(Valley == "Miers") %>%
+  ggplot(aes(x = Time, y = rowSums.otu_table.dvf2..)) +
+  geom_col(fill = "#E64B35FF") +
+  facet_grid(~Treatment, scales = "free") +
+  ylab("Reads") +
+  xlab("") +
+  theme_cowplot() +
+  ggtitle("DNA reads Miers")
+
+c_reads_beacon <- rowSums.asv.df %>%
+  filter(Type == "cDNA") %>%
+  filter(Valley == "Beacon") %>%
+  ggplot(aes(x = Time, y = rowSums.otu_table.dvf2..)) +
+  geom_col(fill = "#4DBBD5FF") +
+  facet_grid(~Treatment, scales = "free") +
+  ylab("Reads") +
+  xlab("") +
+  theme_cowplot() +
+  ggtitle("cDNA reads Beacon")
+
+c_reads_miers <- rowSums.asv.df %>%
+  filter(Type == "cDNA") %>%
+  filter(Valley == "Miers") %>%
+  ggplot(aes(x = Time, y = rowSums.otu_table.dvf2..)) +
+  geom_col(fill = "#E64B35FF") +
+  facet_grid(~Treatment, scales = "free") +
+  ylab("Reads") +
+  xlab("") +
+  theme_cowplot() +
+  ggtitle("cDNA reads Miers")
+
+d_reads_beacon + c_reads_beacon + d_reads_miers + c_reads_miers
+```
+
+
+```{r Create ASV in tax table}
+
+# Get the taxa
+taxa_dvf2<- data.frame(tax_table(dvf2))
+
+# Add ASVs as a rank
+ASVs <- rownames(tax_table(dvf2))
+taxa_dvf2$ASV <- ASVs
+
+# Create a column with all the taxa ranks of interest
+taxa_dvf2<- taxa_dvf2 %>%
+  mutate_all(~str_replace_na(., "")) %>%
+  mutate(Genus_ASV = paste(Genus, ASV)) %>%
+  mutate(Genus_ASV = paste(Family, Genus_ASV)) %>%
+  mutate(Genus_ASV = paste(Order, Genus_ASV)) %>%
+  mutate(Genus_ASV = paste(Class, Genus_ASV)) %>%
+  mutate(Genus_ASV = paste(Phylum, Genus_ASV))
+
+
+# Update phyloseq
+dvf2 <- phyloseq(otu_table(dvf2),
+                 tax_table(as.matrix(taxa_dvf2)),
+                 phy_tree(dvf2),
+                 sample_data(dvf2))
+
+```
+
+
+```{r Separate data sets}
+
+# Separate phyloseq object by valley and DNA type
+# Use data that has been trimmed for ASVs that do not show more than 2 times in at least 2 samples (dvf2)
+
+# Beacon
+beacon <- dvf2 %>%                               # 380 ASVs; 23 samples  # dfv_f 645 taxa
+  subset_samples(Valley == "Beacon") %>%
+  prune_taxa(taxa_sums(.) > 0, .) 
+
+# Beacon DNA
+beacon_d <- beacon %>%                           # 350 ASVs; 19 samples # dvf_f 533 taxa
+  subset_samples(Type == "DNA") %>%
+  prune_taxa(taxa_sums(.) > 0, .) 
+
+# Beacon cDNA
+beacon_c <- beacon %>%                           # 133 ASVs; 4 samples  # dvf_f 215 taxa
+  subset_samples(Type == "cDNA") %>%
+  prune_taxa(taxa_sums(.) > 0, .) 
+
+
+# Miers
+miers <- dvf2 %>%                               # 1109 ASVs; 36 samples # dvf_f 2340 taxa
+  subset_samples(Valley == "Miers") %>%
+  prune_taxa(taxa_sums(.) > 0, .) 
+
+# Miers DNA
+miers_d <- miers %>%                            # 1033 ASVs; 19 samples #dvf_f 1769 taxa
+  subset_samples(Type == "DNA") %>%
+  prune_taxa(taxa_sums(.) > 0, .) 
+
+# Miers cDNA
+miers_c <- miers %>%                            # 889 ASVs; 17 samples # dvf_f 1363 taxa
+  subset_samples(Type == "cDNA") %>%
+  prune_taxa(taxa_sums(.) > 0, .)
+```
+
+
+```{r How many ASVs}
+
+colSums.beacon_d.df <- data.frame(colSums(otu_table(beacon_d))) %>%
+  rownames_to_column("ASV")
+
+colSums.beacon_d.df %>% summarise(
+    max = max(colSums.otu_table.beacon_d..),
+    median = median(colSums.otu_table.beacon_d..),
+    min = min(colSums.otu_table.beacon_d..) 
+    ) %>% 
+      kable()
+
+d_asv_beacon_d <- ggplot(colSums.beacon_d.df, aes(x = reorder(ASV, -colSums.otu_table.beacon_d..), y = colSums.otu_table.beacon_d..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+   ggtitle("DNA reads Beacon")
+
+
+colSums.miers_d.df <- data.frame(colSums(otu_table(miers_d))) %>%
+  rownames_to_column("ASV")
+
+colSums.miers_d.df %>% summarise(
+    max = max(colSums.otu_table.miers_d..),
+    median = median(colSums.otu_table.miers_d..),
+    min = min(colSums.otu_table.miers_d..) 
+    ) %>% 
+      kable()
+
+d_asv_miers_d <- ggplot(colSums.miers_d.df, aes(x = reorder(ASV, -colSums.otu_table.miers_d..), y = colSums.otu_table.miers_d..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+   ggtitle("DNA reads Miers")
+
+
+colSums.beacon_c.df <- data.frame(colSums(otu_table(beacon_c))) %>%
+  rownames_to_column("ASV")
+
+colSums.beacon_c.df %>% summarise(
+    max = max(colSums.otu_table.beacon_c..),
+    median = median(colSums.otu_table.beacon_c..),
+    min = min(colSums.otu_table.beacon_c..) 
+    ) %>% 
+      kable()
+
+d_asv_beacon_c <- ggplot(colSums.beacon_c.df, aes(x = reorder(ASV, -colSums.otu_table.beacon_c..), y = colSums.otu_table.beacon_c..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+   ggtitle("cDNA reads Beacon")
+
+
+colSums.miers_c.df <- data.frame(colSums(otu_table(miers_c))) %>%
+  rownames_to_column("ASV")
+
+colSums.miers_c.df %>% summarise(
+    max = max(colSums.otu_table.miers_c..),
+    median = median(colSums.otu_table.miers_c..),
+    min = min(colSums.otu_table.miers_c..) 
+    ) %>% 
+      kable()
+
+d_asv_miers_c <- ggplot(colSums.miers_c.df, aes(x = reorder(ASV, -colSums.otu_table.miers_c..), y = colSums.otu_table.miers_c..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+   ggtitle("cDNA reads Miers")
+
+d_asv_beacon_d +  d_asv_beacon_c + d_asv_miers_d + d_asv_miers_c
+```
+
+
+```{r}
+library(VennDiagram)
+```
+
+
+```{r Venn Diagram valleys}
+
+# https://www.r-graph-gallery.com/14-venn-diagramm.html
+
+asv_beacon <- data.frame(t(otu_table(beacon))) %>%
+  rownames_to_column() %>%
+  select(rowname)
+
+asv_miers <- data.frame(t(otu_table(miers))) %>%
+  rownames_to_column() %>%
+  select(rowname)
+
+
+set1 <- paste(asv_beacon$rowname, sep="")
+set2 <- paste(asv_miers$rowname, sep="")
+
+col1 <- c("#B2E7E8", "#F2D096")
+
+
+venn1 <- venn.diagram(
+  x = list(set1, set2),
+  category.names = c("Beacon", "Miers"),
+  filename = NULL,
+
+        # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = col1,
+        
+        # Numbers
+        cex = 1,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Names
+        cat.cex = 1,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(5, 10),
+        cat.dist = c(0.05, 0.05),
+        cat.fontfamily = "sans"
+)
+
+#https://stackoverflow.com/questions/61391220/view-venn-diagram-in-rstudio-viewer-not-just-write-to-file-using-venndiagram 
+
+grid.newpage()
+grid.draw(venn1)
+```
+
+
+```{r Venn Diagram separated}
+
+asv_beacon_d <- data.frame(t(otu_table(beacon_d))) %>%
+  rownames_to_column() %>%
+  select(rowname)
+
+asv_beacon_c <- data.frame(t(otu_table(beacon_c))) %>%
+  rownames_to_column() %>%
+  select(rowname)
+
+
+set3 <- paste(asv_beacon_d$rowname, sep="")
+set4 <- paste(asv_beacon_c$rowname, sep="")
+
+col2 <- c("#B2E7E8", "#8FB9AA")
+
+
+venn2 <- venn.diagram(
+  x = list(set3, set4),
+  category.names = c("Beacon DNA", "Beacon RNA"),
+  filename = NULL,
+
+        # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = col2,
+        
+        # Numbers
+        cex = 1,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Names
+        cat.cex = 1,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(5, 10),
+        cat.dist = c(0.05, 0.05),
+        cat.fontfamily = "sans"
+)
+
+grid.newpage()
+grid.draw(venn2)
+
+
+asv_miers_d <- data.frame(t(otu_table(miers_d))) %>%
+  rownames_to_column() %>%
+  select(rowname)
+
+asv_miers_c <- data.frame(t(otu_table(miers_c))) %>%
+  rownames_to_column() %>%
+  select(rowname)
+
+
+set5 <- paste(asv_miers_d$rowname, sep="")
+set6 <- paste(asv_miers_c$rowname, sep="")
+
+col3 <- c("#F2D096", "#ED8975")
+
+
+venn3 <- venn.diagram(
+  x = list(set5, set6),
+  category.names = c("Miers DNA", "Miers RNA"),
+  filename = NULL,
+
+        # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = col3,
+        
+        # Numbers
+        cex = 1,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Names
+        cat.cex = 1,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(5, 10),
+        cat.dist = c(0.05, 0.05),
+        cat.fontfamily = "sans"
+)
+
+grid.newpage()
+grid.draw(venn3)
+```
+
+
+```{r Venn Diagram all together}
+
+col4 <- c("#B2E7E8", "#8FB9AA", "#F2D096", "#ED8975")
+
+venn4 <- venn.diagram(
+  x = list(set3, set4, set5, set6),
+  category.names = c("Beacon DNA", "Beacon RNA", "Miers DNA", "Miers RNA"),
+  filename = NULL,
+
+        # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = col4,
+        
+        # Numbers
+        cex = 1,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Names
+        cat.cex = 1,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(5, 5, 5, 5),
+        cat.dist = c(0.05, 0.05, 0.05, 0.05),
+        cat.fontfamily = "sans"
+)
+
+grid.newpage()
+grid.draw(venn4)
+```
+
+
+```{r Save image}
+# 
+# venn.diagram(
+#   x = list(set3, set4, set5, set6),
+#   category.names = c("Beacon DNA", "Beacon RNA", "Miers DNA", "Miers RNA"),
+#   filename = "venn_diagram_all.png",
+#   output=TRUE,
+# 
+#         # Output features
+#         imagetype="png" ,
+#         height = 1200 ,
+#         width = 1600 ,
+#         resolution = 300,
+#         compression = "lzw",
+# 
+#         # Circles
+#         lwd = 2,
+#         lty = 'blank',
+#         fill = col4,
+# 
+#         # Numbers
+#         cex = 1,
+#         fontface = "bold",
+#         fontfamily = "sans",
+# 
+#         # Names
+#         cat.cex = 1,
+#         cat.fontface = "bold",
+#         cat.default.pos = "outer",
+#         cat.pos = c(5, 5, 5, 5),
+#         cat.dist = c(0.05, 0.05, 0.05, 0.05),
+#         cat.fontfamily = "sans"
+# )
+```
+
+
+```{r Inspecting the ASVs}
+
+# The 40 ASVs that are commom to all data sets
+
+dv_all <- subset_taxa(dvf2,
+                     ASV %in% c("ASV_1", "ASV_2", "ASV_3", "ASV_4", "ASV_5", "ASV_7", "ASV_9", "ASV_10", "ASV_17", "ASV_19" ,
+                                "ASV_23", "ASV_25", "ASV_33", "ASV_38", "ASV_46", "ASV_47", "ASV_62", "ASV_69", "ASV_74", "ASV_77",  
+                                "ASV_85", "ASV_90", "ASV_102", "ASV_116", "ASV_118", "ASV_125", "ASV_139", "ASV_157", "ASV_176", "ASV_187",
+                                "ASV_206", "ASV_212", "ASV_241", "ASV_245", "ASV_284", "ASV_289", "ASV_326", "ASV_354", "ASV_365", "ASV_439"))
+
+# subsetting all ASVs that occur in Beacon DNA and RNA datasets
+
+dv_beacon <-  subset_taxa(beacon,
+                     ASV %in% c("ASV_11", "ASV_22", "ASV_41", "ASV_44", "ASV_56", "ASV_57", "ASV_59", "ASV_66", "ASV_80", "ASV_86", 
+                                "ASV_95", "ASV_105", "ASV_120", "ASV_123", "ASV_133", "ASV_161", "ASV_181", "ASV_207", "ASV_227", "ASV_234", 
+                                "ASV_240", "ASV_270", "ASV_283", "ASV_316", "ASV_317", "ASV_327", "ASV_361", "ASV_390", "ASV_398", "ASV_419",
+                                "ASV_427", "ASV_471", "ASV_491", "ASV_492",  "ASV_515", "ASV_530", "ASV_571", "ASV_600", "ASV_646", "ASV_662",
+                                "ASV_687", "ASV_730", "ASV_797", "ASV_874", "ASV_949", "ASV_995", "ASV_1015", "ASV_1016", "ASV_1147", "ASV_1487",
+                                "ASV_1488"))
+
+
+# subsetting all ASVs that occur in Miers DNA and RNA datasets - 653 in common, so I am only going to select the 20 I will use for plotting
+
+dv_miers <-  subset_taxa(miers,
+                     ASV %in% c("ASV_15", "ASV_28", "ASV_29", "ASV_40", "ASV_48", "ASV_49", "ASV_54", "ASV_67", "ASV_72", "ASV_73",   
+                                "ASV_82", "ASV_84", "ASV_87", "ASV_89", "ASV_93", "ASV_94", "ASV_97", "ASV_109", "ASV_111", "ASV_113"))
+
+# Plot top 20 for each valley as a heatmap - it is a good approach
+```
+
+
+```{r Merge disturbance}
+
+# Merge Disturbances from all time points
+
+beacon_d_treat <- merge_samples(beacon_d, "Treatment")
+miers_d_treat <- merge_samples(miers_d, "Treatment")
+
+beacon_c_treat <- beacon_c # there is only 1 disturbance for each time point
+miers_c_treat <- merge_samples(miers_c, "Treatment")
+```
+
+
+```{r Select ASVs}
+
+# Select the ASVs of interest and transform data set with centered-log ratio (clr) 
+
+beacon_d_heat <- subset_taxa(beacon_d_treat,
+                             ASV %in% c("ASV_1", "ASV_2", "ASV_3", "ASV_4", "ASV_5", "ASV_7", "ASV_9", "ASV_10", "ASV_17", "ASV_19" ,
+                                "ASV_23", "ASV_25", "ASV_33", "ASV_38", "ASV_46", "ASV_47", "ASV_62", "ASV_69", "ASV_74", "ASV_77")) %>% 
+  microbiome::transform("clr")
+
+miers_d_heat <- subset_taxa(miers_d_treat,
+                            ASV %in% c("ASV_1", "ASV_2", "ASV_3", "ASV_4", "ASV_5", "ASV_7", "ASV_9", "ASV_10", "ASV_17", "ASV_19" ,
+                                "ASV_23", "ASV_25", "ASV_33", "ASV_38", "ASV_46", "ASV_47", "ASV_62", "ASV_69", "ASV_74", "ASV_77")) %>% 
+  microbiome::transform("clr")
+
+
+beacon_c_heat <- subset_taxa(beacon_c_treat,
+                             ASV %in% c("ASV_1", "ASV_2", "ASV_3", "ASV_4", "ASV_5", "ASV_7", "ASV_9", "ASV_10", "ASV_17", "ASV_19" ,
+                                "ASV_23", "ASV_25", "ASV_33", "ASV_38", "ASV_46", "ASV_47", "ASV_62", "ASV_69", "ASV_74", "ASV_77")) %>%
+  microbiome::transform("clr")
+
+miers_c_heat <- subset_taxa(miers_c_treat,
+                            ASV %in% c("ASV_1", "ASV_2", "ASV_3", "ASV_4", "ASV_5", "ASV_7", "ASV_9", "ASV_10", "ASV_17", "ASV_19" ,
+                                "ASV_23", "ASV_25", "ASV_33", "ASV_38", "ASV_46", "ASV_47", "ASV_62", "ASV_69", "ASV_74", "ASV_77")) %>%
+  microbiome::transform("clr")
+```
+
+
+```{r Heatmaps}
+
+# Plot as Heatmaps - order the samples by the cluster result 
+
+# Melt to get the right data frame
+beacon_d_heat <- beacon_d_heat %>% psmelt()
+miers_d_heat <- miers_d_heat %>% psmelt()
+
+beacon_c_heat <- beacon_c_heat %>% psmelt()
+miers_c_heat <- miers_c_heat %>% psmelt()
+
+
+# Palette
+library(wesanderson)
+pal <- wes_palette("Zissou1", 5, type = "continuous") # I find this one works good on heatmaps
+
+
+# Order disturbances by cluster order
+beacon_d_heat$Sample <- factor(beacon_d_heat$Sample,
+                               levels = c("NaCl", "HighN", "LowN", "OM", "Water", "Control", "Cu"))
+
+# Labels for treatments
+disturb.label.0 <- c("Conductivity", "High N", "Low N", "Glucose", "Water", "Undisturbed", "Copper")
+
+# Plot
+beacon.d.heatmap <- ggplot(data = beacon_d_heat, 
+       mapping = aes(x = Sample, y = ASV, fill = Abundance)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colours = pal) + 
+  scale_x_discrete(expand = c(0, 0), labels = disturb.label.0) +
+  scale_y_discrete(expand = c(0, 0)) + 
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.tag = element_text(size = 20)) +
+  labs(tag = "a")
+
+  
+# Order disturbances by cluster order
+miers_d_heat$Sample <- factor(miers_d_heat$Sample,
+                               levels = c("Control", "HighN", "NaCl", "Water", "LowN", "Cu", "OM"))
+
+# Labels for treatments
+disturb.label.1 <- c("Undisturbed", "High N", "Conductivity", "Water", "Low N", "Copper", "Glucose")
+
+
+# Plot
+miers.d.heatmap <- ggplot(data = miers_d_heat, 
+       mapping = aes(x = Sample, y = ASV, fill = Abundance)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colours = pal) + 
+  scale_x_discrete(expand = c(0, 0), labels = disturb.label.1) +
+  scale_y_discrete(expand = c(0, 0)) + 
+  xlab("") +
+  ylab("") +
+ theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.tag = element_text(size = 20)) +
+  labs(tag = "c")
+
+
+# Order disturbances by cluster order
+beacon_c_heat$Treatment <- factor(beacon_c_heat$Treatment,
+                               levels = c("Cu", "Water", "LowN", "HighN"))
+
+# Labels for treatments
+disturb.label.2 <- c("Copper", "Water", "Low N", "High N")
+
+# Plot
+beacon.c.heatmap <- ggplot(data = beacon_c_heat, 
+       mapping = aes(x = Treatment, y = ASV, fill = Abundance)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colours = pal) + 
+  scale_x_discrete(expand = c(0, 0), labels = disturb.label.2) +
+  scale_y_discrete(expand = c(0, 0)) + 
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.tag = element_text(size = 20)) +
+  labs(tag = "b")
+
+
+# Order disturbances by cluster order
+miers_c_heat$Sample <- factor(miers_c_heat$Sample,
+                               levels = c("LowN", "Water", "Cu", "HighN", "NaCl",  "OM"))
+
+# Labels for treatments
+disturb.label.3 <- c("Low N", "Water", "Copper", "High N", "Conductivity", "Glucose")
+
+# Plot
+miers.c.heatmap <- ggplot(data = miers_c_heat, 
+       mapping = aes(x = Sample, y = ASV, fill = Abundance)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colours = pal) + 
+  scale_x_discrete(expand = c(0, 0), labels = disturb.label.3) +
+  scale_y_discrete(expand = c(0, 0)) +
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.tag = element_text(size = 20)) +
+  labs(tag = "d")
+
+
+beacon.d.heatmap + beacon.c.heatmap + miers.d.heatmap + miers.c.heatmap
+```
+
+
+```{r Select ASVs for each valley}
+
+# Select the ASVs of interest and transform data set with centered-log ratio (clr) 
+
+beacon_d_heat <- subset_taxa(beacon_d_treat,
+                             ASV %in% c("ASV_11", "ASV_22", "ASV_41", "ASV_44", "ASV_56", "ASV_57", "ASV_59", "ASV_66", "ASV_80", "ASV_86", 
+                                "ASV_95", "ASV_105", "ASV_120", "ASV_123", "ASV_133", "ASV_161", "ASV_181", "ASV_207", "ASV_227", "ASV_234")) %>% 
+  microbiome::transform("clr")
+
+miers_d_heat <- subset_taxa(miers_d_treat,
+                            ASV %in% c("ASV_15", "ASV_28", "ASV_29", "ASV_40", "ASV_48", "ASV_49", "ASV_54", "ASV_67", "ASV_72", "ASV_73",   
+                                "ASV_82", "ASV_84", "ASV_87", "ASV_89", "ASV_93", "ASV_94", "ASV_97", "ASV_109", "ASV_111", "ASV_113")) %>% 
+  microbiome::transform("clr")
+
+
+beacon_c_heat <- subset_taxa(beacon_c_treat,
+                             ASV %in% c("ASV_11", "ASV_22", "ASV_41", "ASV_44", "ASV_56", "ASV_57", "ASV_59", "ASV_66", "ASV_80", "ASV_86", 
+                                "ASV_95", "ASV_105", "ASV_120", "ASV_123", "ASV_133", "ASV_161", "ASV_181", "ASV_207", "ASV_227", "ASV_234")) %>%
+  microbiome::transform("clr")
+
+miers_c_heat <- subset_taxa(miers_c_treat,
+                            ASV %in% c("ASV_15", "ASV_28", "ASV_29", "ASV_40", "ASV_48", "ASV_49", "ASV_54", "ASV_67", "ASV_72", "ASV_73",   
+                                "ASV_82", "ASV_84", "ASV_87", "ASV_89", "ASV_93", "ASV_94", "ASV_97", "ASV_109", "ASV_111", "ASV_113")) %>%
+  microbiome::transform("clr")
+```
+
+
+```{r Heatmaps for each valley}
+
+# Plot as Heatmaps - order the samples by the cluster result 
+
+# Melt to get the right data frame
+beacon_d_heat <- beacon_d_heat %>% psmelt()
+miers_d_heat <- miers_d_heat %>% psmelt()
+
+beacon_c_heat <- beacon_c_heat %>% psmelt()
+miers_c_heat <- miers_c_heat %>% psmelt()
+
+
+# Palette
+library(wesanderson)
+pal <- wes_palette("Zissou1", 5, type = "continuous") # I find this one works good on heatmaps
+
+
+# Order disturbances by cluster order
+beacon_d_heat$Sample <- factor(beacon_d_heat$Sample,
+                               levels = c("NaCl", "HighN", "LowN", "OM", "Water", "Control", "Cu"))
+
+# Labels for treatments
+disturb.label.0 <- c("Conductivity", "High N", "Low N", "Glucose", "Water", "Undisturbed", "Copper")
+
+# Plot
+beacon.d.heatmap <- ggplot(data = beacon_d_heat, 
+       mapping = aes(x = Sample, y = ASV, fill = Abundance)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colours = pal) + 
+  scale_x_discrete(expand = c(0, 0), labels = disturb.label.0) +
+  scale_y_discrete(expand = c(0, 0)) + 
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.tag = element_text(size = 20)) +
+  labs(tag = "a")
+
+  
+# Order disturbances by cluster order
+miers_d_heat$Sample <- factor(miers_d_heat$Sample,
+                               levels = c("Control", "HighN", "NaCl", "Water", "LowN", "Cu", "OM"))
+
+# Labels for treatments
+disturb.label.1 <- c("Undisturbed", "High N", "Conductivity", "Water", "Low N", "Copper", "Glucose")
+
+
+# Plot
+miers.d.heatmap <- ggplot(data = miers_d_heat, 
+       mapping = aes(x = Sample, y = ASV, fill = Abundance)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colours = pal) + 
+  scale_x_discrete(expand = c(0, 0), labels = disturb.label.1) +
+  scale_y_discrete(expand = c(0, 0)) + 
+  xlab("") +
+  ylab("") +
+ theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.tag = element_text(size = 20)) +
+  labs(tag = "c")
+
+
+# Order disturbances by cluster order
+beacon_c_heat$Treatment <- factor(beacon_c_heat$Treatment,
+                               levels = c("Cu", "Water", "LowN", "HighN"))
+
+# Labels for treatments
+disturb.label.2 <- c("Copper", "Water", "Low N", "High N")
+
+# Plot
+beacon.c.heatmap <- ggplot(data = beacon_c_heat, 
+       mapping = aes(x = Treatment, y = ASV, fill = Abundance)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colours = pal) + 
+  scale_x_discrete(expand = c(0, 0), labels = disturb.label.2) +
+  scale_y_discrete(expand = c(0, 0)) + 
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.tag = element_text(size = 20)) +
+  labs(tag = "b")
+
+
+# Order disturbances by cluster order
+miers_c_heat$Sample <- factor(miers_c_heat$Sample,
+                               levels = c("LowN", "Water", "Cu", "HighN", "NaCl",  "OM"))
+
+# Labels for treatments
+disturb.label.3 <- c("Low N", "Water", "Copper", "High N", "Conductivity", "Glucose")
+
+# Plot
+miers.c.heatmap <- ggplot(data = miers_c_heat, 
+       mapping = aes(x = Sample, y = ASV, fill = Abundance)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colours = pal) + 
+  scale_x_discrete(expand = c(0, 0), labels = disturb.label.3) +
+  scale_y_discrete(expand = c(0, 0)) +
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.tag = element_text(size = 20)) +
+  labs(tag = "d")
+
+
+beacon.d.heatmap + beacon.c.heatmap + miers.d.heatmap + miers.c.heatmap
+```
