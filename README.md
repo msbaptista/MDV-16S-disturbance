@@ -1,3 +1,3 @@
 # MDV-16S-disturbance
 
-Data and analysis for the paper: Soil bacterial communities from the McMurdo Dry Valleys, Antarctica, show structural resilience to environmental disturbances
+Data and analysis for the paper: Soils of two Antarctica Dry Valleys exhibit unique microbial communities structures in response to similar environmental disturbances
